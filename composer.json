@@ -1,0 +1,39 @@
+{
+  "name": "threadi/tcp-analyzer",
+  "version": "1.0.0",
+  "license": "GPL-3.0-or-later",
+  "scripts": {
+    "test": "phpunit"
+  },
+  "minimum-stability": "stable",
+  "autoload": {
+    "psr-4": {
+      "TcpAnalyzer\\": "src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "TcpAnalyzer\\PHPUnitTests\\": "tests/"
+    }
+  },
+  "config": {
+    "allow-plugins": {
+      "dealerdirect/phpcodesniffer-composer-installer": true,
+      "phpstan/extension-installer": true
+    },
+    "optimize-autoloader": true,
+    "classmap-authoritative": true,
+    "apcu-autoloader": true,
+    "prepend-autoloader": false,
+    "platform-check": false
+  },
+  "require-dev": {
+    "phpstan/phpstan": "^2.1",
+    "phpstan/extension-installer": "^1.4",
+    "dealerdirect/phpcodesniffer-composer-installer": "^1.2",
+    "phpunit/phpunit": "^11"
+  },
+  "require": {
+    "php": ">=8.2"
+  }
+}
