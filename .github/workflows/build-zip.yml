@@ -1,28 +1,120 @@
-name: Build release zip
+name: Release
 
 on:
-    push:
-        tags:
-            - '*'
-    workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
-    build:
-        name: Build release zip
-        runs-on: ubuntu-latest
-        steps:
-            - name: Checkout
-              uses: actions/checkout@v7
+  test:
+    name: Test on PHP ${{ matrix.php }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        php: ['8.2', '8.3', '8.4']
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
 
-            - name: Run package installs and builds
-              run: |
-                  composer install
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: sockets, curl
+          coverage: none
 
-            - uses: anchore/sbom-action@v0
+      - name: Validate composer.json
+        run: composer validate --strict
 
-            - name: Create ZIP release
-              run: |
-                cd ..
-                zip -rq ${{ github.event.repository.name }}_${{ github.ref_name }}.zip ${{ github.event.repository.name }}/ -x "*/.git/*" "*/.github/*" "*/blocks/*/src/*" "*/docs/*" "*/phpcs.xml" "*/composer.lock" "*/package.json" "*/package-lock.json" "*/phpcs.xml.dist" "*/.gitignore" "*/vendor/*" "*/node_modules/*" "/.editorconfig" "*/assets/*" "*/phpstan.neon" "*/Taskfile.yml" "*/libs/*" "*/src/*"
-                zip -urq ${{ github.event.repository.name }}_${{ github.ref_name }}.zip ${{ github.event.repository.name }}/vendor/autoload.php
-                zip -urq ${{ github.event.repository.name }}_${{ github.ref_name }}.zip ${{ github.event.repository.name }}/vendor/composer/*
+      - name: Install dependencies
+        run: composer install --no-interaction --no-progress
+
+      - name: PHPUnit
+        run: vendor/bin/phpunit
+
+      - name: PHPStan
+        if: matrix.php == '8.2'
+        run: vendor/bin/phpstan analyse --no-progress
+
+      - name: PHPCS
+        if: matrix.php == '8.2'
+        run: vendor/bin/phpcs
+
+  release:
+    name: Build and publish release
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      PACKAGE: ${{ github.event.repository.name }}
+      VERSION: ${{ github.ref_name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          coverage: none
+
+      - name: Install runtime dependencies
+        run: composer install --no-dev --optimize-autoloader --classmap-authoritative --no-interaction --no-progress
+
+      - name: Build download ZIP
+        run: |
+          set -euo pipefail
+          ZIP="$RUNNER_TEMP/dist/${PACKAGE}_${VERSION}.zip"
+          mkdir -p "$RUNNER_TEMP/dist" "$RUNNER_TEMP/stage/$PACKAGE"
+          
+          # git archive honours the export-ignore rules in .gitattributes,
+          # so "what belongs in the package" is defined in exactly one place -
+          # the same rules GitHub applies to the archive Composer downloads.
+          git archive --format=zip --prefix="$PACKAGE/" -o "$ZIP" "$GITHUB_SHA"
+          
+          # vendor/ is not tracked in git. It is only needed by people who
+          # install the ZIP by hand - Composer users get their own autoloader.
+          cp -r vendor "$RUNNER_TEMP/stage/$PACKAGE/"
+          ( cd "$RUNNER_TEMP/stage" && zip -urq "$ZIP" "$PACKAGE/vendor" )
+          
+          ( cd "$RUNNER_TEMP/dist" && sha256sum "${PACKAGE}_${VERSION}.zip" > "${PACKAGE}_${VERSION}.zip.sha256" )
+          
+          unzip -l "$ZIP"
+
+      - name: Verify the ZIP is usable on its own
+        run: |
+          set -euo pipefail
+          ZIP="$RUNNER_TEMP/dist/${PACKAGE}_${VERSION}.zip"
+          
+          test "$(unzip -l "$ZIP" | grep -c "$PACKAGE/src/.*\.php")" -gt 0
+          test "$(unzip -l "$ZIP" | grep -c "$PACKAGE/vendor/autoload\.php")" -eq 1
+          test "$(unzip -l "$ZIP" | grep -c "$PACKAGE/tests/")" -eq 0
+          
+          # Unpack it somewhere else entirely and boot the library from the
+          # shipped autoloader - a broken classmap would slip through otherwise.
+          unzip -q "$ZIP" -d "$RUNNER_TEMP/verify"
+          php -r '
+              require "'"$RUNNER_TEMP"'/verify/'"$PACKAGE"'/vendor/autoload.php";
+              $analyzer = new TcpAnalyzer\TcpAnalyzer();
+              $slugs = array_keys( $analyzer->get_available_tests() );
+              if ( array() === $slugs ) { exit( 1 ); }
+              echo "ZIP boots, tests available: " . implode( ", ", $slugs ) . PHP_EOL;
+          '
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          artifact-name: ${{ github.event.repository.name }}-sbom.spdx.json
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            ${{ runner.temp }}/dist/${{ github.event.repository.name }}_${{ github.ref_name }}.zip
+            ${{ runner.temp }}/dist/${{ github.event.repository.name }}_${{ github.ref_name }}.zip.sha256
+          generate_release_notes: true
