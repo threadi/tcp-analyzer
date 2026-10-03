@@ -5,7 +5,11 @@
  * @package tcp-analyzer
  */
 
+declare(strict_types=1);
+
 namespace TcpAnalyzer\Traceroute;
+
+use TcpAnalyzer\Target_Filter;
 
 /**
  * Runs the traceroute binary via shell_exec() and parses its output.
@@ -41,8 +45,27 @@ class Shell_Method implements Method_Interface {
 
 	/**
 	 * {@inheritDoc}
+	 *
+	 * @param string $host The target host.
+	 * @param int    $max_hops Maximum number of hops to probe.
+	 * @param int    $wait Per-hop wait time in seconds.
+	 * @return array<int,array{hop:int,ip:?string,times_ms:float[]}>
 	 */
 	public function trace( string $host, int $max_hops, int $wait ): array {
+		/*
+		 * escapeshellarg() keeps the host from breaking out of its argument,
+		 * but not from being an option: a host like "-i" or "--help" would
+		 * still be handed to traceroute as one. So only a plain hostname or
+		 * IP address ever reaches the command line.
+		 */
+		if ( ! Target_Filter::is_valid_host( $host ) ) {
+			return array();
+		}
+
+		// Whatever the caller passes on: the TTL is a single byte, and a wait time has to be positive.
+		$max_hops = max( 1, min( $max_hops, 255 ) );
+		$wait     = max( 1, $wait );
+
 		$command = sprintf( 'traceroute -n -w %d -m %d %s 2>&1', $wait, $max_hops, escapeshellarg( $host ) );
 
 		// phpcs:ignore WordPress.PHP.NoSilencedErrors, WordPress.PHP.DiscouragedPHPFunctions -- best-effort diagnostic tool, output is discarded on failure.

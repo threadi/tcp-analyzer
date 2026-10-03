@@ -14,6 +14,7 @@ use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use TcpAnalyzer\Enums\Status;
 use TcpAnalyzer\PHPUnitTests\Support\FunctionMocks;
+use TcpAnalyzer\Target_Filter;
 use TcpAnalyzer\Tests\Dns;
 
 /**
@@ -146,5 +147,61 @@ final class Dns_Test extends TestCase {
 		$this->assertSame( Status::ERROR, $result->get_status() );
 		$this->assertSame( 'invalid_config', $result->get_error_code() );
 		$this->assertSame( array( 'missing_config' => array( 'host' ) ), $result->get_data() );
+	}
+
+	/**
+	 * A target filter is asked with the resolved IP - a DNS lookup has no port.
+	 *
+	 * @return void
+	 */
+	#[Test]
+	public function reports_an_ip_the_filter_has_accepted(): void {
+		$asked = array();
+
+		FunctionMocks::set_for_tests( 'gethostbyname', static fn( string $hostname ): string => '93.184.216.34' );
+
+		$dns = new Dns();
+		$dns->set_config(
+			array(
+				'host'          => 'example.com',
+				'target_filter' => static function ( string $host, string $ip, ?int $port ) use ( &$asked ): bool {
+					$asked[] = array( $host, $ip, $port );
+
+					return true;
+				},
+			)
+		);
+		$dns->run();
+
+		$this->assertSame( array( array( 'example.com', '93.184.216.34', null ) ), $asked );
+		$this->assertSame( Status::SUCCESS, $dns->get_result()->get_status() );
+		$this->assertSame( '93.184.216.34', $dns->get_result()->get_value() );
+	}
+
+	/**
+	 * A rejected IP is not reported: the result must not tell where an
+	 * internal name points to.
+	 *
+	 * @return void
+	 */
+	#[Test]
+	public function does_not_report_an_ip_the_filter_has_rejected(): void {
+		FunctionMocks::set_for_tests( 'gethostbyname', static fn( string $hostname ): string => '10.0.0.5' );
+
+		$dns = new Dns();
+		$dns->set_config(
+			array(
+				'host'          => 'intranet.example.com',
+				'target_filter' => Target_Filter::public_only(),
+			)
+		);
+		$dns->run();
+
+		$result = $dns->get_result();
+
+		$this->assertSame( Status::ERROR, $result->get_status() );
+		$this->assertSame( 'target_rejected', $result->get_error_code() );
+		$this->assertNull( $result->get_value() );
+		$this->assertStringNotContainsString( '10.0.0.5', (string) json_encode( $result->to_array() ) );
 	}
 }

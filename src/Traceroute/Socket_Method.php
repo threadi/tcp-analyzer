@@ -5,6 +5,8 @@
  * @package tcp-analyzer
  */
 
+declare(strict_types=1);
+
 namespace TcpAnalyzer\Traceroute;
 
 use Socket;
@@ -44,9 +46,9 @@ class Socket_Method implements Method_Interface {
 	 *
 	 * @var int
 	 */
-	private const ICMP_ECHO_REPLY = 0;
-	private const ICMP_UNREACHABLE = 3;
-	private const ICMP_ECHO_REQUEST = 8;
+	private const ICMP_ECHO_REPLY    = 0;
+	private const ICMP_UNREACHABLE   = 3;
+	private const ICMP_ECHO_REQUEST  = 8;
 	private const ICMP_TIME_EXCEEDED = 11;
 
 	/**
@@ -64,12 +66,24 @@ class Socket_Method implements Method_Interface {
 	private int $probes;
 
 	/**
+	 * Maximum runtime of a trace in seconds.
+	 *
+	 * @var int
+	 */
+	private int $max_duration;
+
+	/**
 	 * Constructor.
 	 *
-	 * @param int $probes Number of probes per hop, defaults to 3 like the traceroute binary.
+	 * @param int $probes       Number of probes per hop, defaults to 3 like the traceroute binary.
+	 * @param int $max_duration Maximum runtime of a trace in seconds. Every probe that gets no reply
+	 *                          costs the full wait time, so a trace through silent hops could
+	 *                          otherwise run for minutes. Once the time is up, the hops found so
+	 *                          far are returned.
 	 */
-	public function __construct( int $probes = 3 ) {
-		$this->probes = max( 1, $probes );
+	public function __construct( int $probes = 3, int $max_duration = 30 ) {
+		$this->probes       = max( 1, $probes );
+		$this->max_duration = max( 1, $max_duration );
 	}
 
 	/**
@@ -101,6 +115,11 @@ class Socket_Method implements Method_Interface {
 
 	/**
 	 * {@inheritDoc}
+	 *
+	 * @param string $host The target host.
+	 * @param int    $max_hops Maximum number of hops to probe.
+	 * @param int    $wait Per-hop wait time in seconds.
+	 * @return array<int,array{hop:int,ip:?string,times_ms:float[]}>
 	 */
 	public function trace( string $host, int $max_hops, int $wait ): array {
 		$destination_ip = filter_var( $host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4 ) ? $host : gethostbyname( $host );
@@ -130,9 +149,17 @@ class Socket_Method implements Method_Interface {
 
 		$identifier = getmypid() & 0xFFFF;
 		$hops       = array();
+		$deadline   = microtime( true ) + $this->max_duration;
+
+		// The TTL is a single byte, there is no hop beyond 255.
+		$max_hops = min( $max_hops, 255 );
 
 		for ( $ttl = 1; $ttl <= $max_hops; $ttl++ ) {
-			$hop = $this->probe_hop( $send_socket, $receive_socket, $destination_ip, $ttl, $identifier, $wait );
+			if ( microtime( true ) >= $deadline ) {
+				break;
+			}
+
+			$hop = $this->probe_hop( $send_socket, $receive_socket, $destination_ip, $ttl, $identifier, $wait, $deadline );
 
 			$hops[] = array(
 				'hop'      => $ttl,
@@ -160,9 +187,10 @@ class Socket_Method implements Method_Interface {
 	 * @param int    $ttl            TTL of this hop.
 	 * @param int    $identifier     ICMP identifier of this run.
 	 * @param int    $wait           Per-probe wait time in seconds.
+	 * @param float  $deadline       Absolute deadline of the whole trace as a microtime value.
 	 * @return array{ip:?string,times_ms:float[],reached:bool}
 	 */
-	private function probe_hop( Socket $send_socket, Socket $receive_socket, string $destination_ip, int $ttl, int $identifier, int $wait ): array {
+	private function probe_hop( Socket $send_socket, Socket $receive_socket, string $destination_ip, int $ttl, int $identifier, int $wait, float $deadline ): array {
 		$hop_ip   = null;
 		$times_ms = array();
 		$reached  = false;
@@ -173,12 +201,16 @@ class Socket_Method implements Method_Interface {
 
 			$started = microtime( true );
 
+			if ( $started >= $deadline ) {
+				break;
+			}
+
 			// phpcs:ignore WordPress.PHP.NoSilencedErrors -- a failed send is handled as a missing reply.
 			if ( false === @socket_sendto( $send_socket, $packet, strlen( $packet ), 0, $destination_ip, 0 ) ) {
 				continue;
 			}
 
-			$reply = $this->receive_reply( $receive_socket, $identifier, $sequence, $started + $wait );
+			$reply = $this->receive_reply( $receive_socket, $identifier, $sequence, min( $started + $wait, $deadline ) );
 
 			if ( null === $reply ) {
 				continue;

@@ -66,6 +66,44 @@ namespace TcpAnalyzer\Traits {
 
 		return null !== $mock ? (bool) $mock( $function ) : \function_exists( $function );
 	}
+
+	/**
+	 * Stub for defined(), used by the Http_Client trait to find out whether
+	 * the installed libcurl is able to pin a connection.
+	 *
+	 * @param string $constant_name The constant name to check.
+	 * @return bool
+	 */
+	function defined( string $constant_name ): bool {
+		$mock = FunctionMocks::get( __FUNCTION__ );
+
+		return null !== $mock ? (bool) $mock( $constant_name ) : \defined( $constant_name );
+	}
+
+	/**
+	 * Stub for gethostbynamel(), used by the Target_Guard trait.
+	 *
+	 * @param string $hostname The hostname to resolve.
+	 * @return string[]|false
+	 */
+	function gethostbynamel( string $hostname ) {
+		$mock = FunctionMocks::get( __FUNCTION__ );
+
+		return null !== $mock ? $mock( $hostname ) : \gethostbynamel( $hostname );
+	}
+
+	/**
+	 * Stub for dns_get_record(), used by the Target_Guard trait.
+	 *
+	 * @param string $hostname The hostname to look up.
+	 * @param int    $type     The record type.
+	 * @return array<int,array<string,mixed>>|false
+	 */
+	function dns_get_record( string $hostname, int $type = DNS_ANY ) {
+		$mock = FunctionMocks::get( __FUNCTION__ );
+
+		return null !== $mock ? $mock( $hostname, $type ) : \dns_get_record( $hostname, $type );
+	}
 }
 
 namespace TcpAnalyzer\Traceroute {

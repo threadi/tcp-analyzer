@@ -15,6 +15,7 @@ use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use TcpAnalyzer\Enums\Status;
 use TcpAnalyzer\PHPUnitTests\Support\Http_Double;
+use TcpAnalyzer\Target_Filter;
 use TcpAnalyzer\Tests\Http;
 
 /**
@@ -267,5 +268,145 @@ final class Http_Test extends TestCase {
 		$this->assertSame( Status::ERROR, $result->get_status() );
 		$this->assertSame( 'invalid_config', $result->get_error_code() );
 		$this->assertSame( array( 'missing_config' => array( 'url' ) ), $result->get_data() );
+	}
+
+	/**
+	 * Without a configured target filter the HTTP client gets none.
+	 *
+	 * @return void
+	 */
+	#[Test]
+	public function has_no_target_filter_by_default(): void {
+		$this->http->set_config( array( 'url' => 'https://example.com' ) );
+
+		$this->assertNull( $this->http->read_http_target_filter() );
+	}
+
+	/**
+	 * The configured target filter is handed to the HTTP client.
+	 *
+	 * @return void
+	 */
+	#[Test]
+	public function hands_the_target_filter_to_the_http_client(): void {
+		$filter = static fn( string $host, string $ip, ?int $port ): bool => true;
+
+		$this->http->set_config(
+			array(
+				'url'           => 'https://example.com',
+				'target_filter' => $filter,
+			)
+		);
+
+		$this->assertSame( $filter, $this->http->read_http_target_filter() );
+	}
+
+	/**
+	 * The real test - no double - reports a rejected target as an error,
+	 * before anything is sent.
+	 *
+	 * @return void
+	 */
+	#[Test]
+	public function reports_a_rejected_target(): void {
+		$http = new Http();
+		$http->set_config(
+			array(
+				'url'           => 'http://169.254.169.254/latest/meta-data/',
+				'target_filter' => Target_Filter::public_only(),
+			)
+		);
+		$http->run();
+
+		$result = $http->get_result();
+
+		$this->assertSame( Status::ERROR, $result->get_status() );
+		$this->assertSame( 'target_rejected', $result->get_error_code() );
+		$this->assertNull( $result->get_value() );
+		$this->assertSame( 'http://169.254.169.254/latest/meta-data/', $result->get_data()['url'] );
+	}
+
+	/**
+	 * The real test - no double - refuses anything but http:// and https://.
+	 *
+	 * @return void
+	 */
+	#[Test]
+	public function reports_a_url_with_another_scheme(): void {
+		$http = new Http();
+		$http->set_config( array( 'url' => 'file:///etc/passwd' ) );
+		$http->run();
+
+		$result = $http->get_result();
+
+		$this->assertSame( Status::ERROR, $result->get_status() );
+		$this->assertSame( 'url_scheme_not_allowed', $result->get_error_code() );
+		$this->assertNull( $result->get_value() );
+	}
+
+	/**
+	 * Credentials in the URL are used for the request, but are not repeated
+	 * in the result - neither on success nor on failure.
+	 *
+	 * @return void
+	 */
+	#[Test]
+	public function keeps_credentials_out_of_the_result(): void {
+		foreach ( array( true, false ) as $success ) {
+			$http                      = new Http_Double();
+			$http->response['success'] = $success;
+
+			$http->set_config( array( 'url' => 'https://user:secret@example.com/path' ) );
+			$http->run();
+
+			$this->assertSame( 'https://user:secret@example.com/path', $http->calls[0]['url'] );
+			$this->assertSame( 'https://example.com/path', $http->get_result()->get_data()['url'] );
+			$this->assertStringNotContainsString( 'secret', (string) json_encode( $http->get_result()->to_array() ) );
+		}
+	}
+
+	/**
+	 * A URL that is not a scalar is a configuration error, nothing is requested.
+	 *
+	 * @return void
+	 */
+	#[Test]
+	public function refuses_a_url_that_is_not_a_scalar(): void {
+		foreach ( array( array( 'https://example.com' ), new \stdClass() ) as $url ) {
+			$http = new Http_Double();
+			$http->set_config( array( 'url' => $url ) );
+			$http->run();
+
+			$this->assertSame( array(), $http->calls );
+			$this->assertSame( 'invalid_config', $http->get_result()->get_error_code() );
+			$this->assertSame( array( 'invalid_config' => array( 'url' ) ), $http->get_result()->get_data() );
+		}
+	}
+
+	/**
+	 * Optional values of the wrong type fall back to their defaults instead
+	 * of raising a PHP warning.
+	 *
+	 * @return void
+	 */
+	#[Test]
+	public function falls_back_to_the_defaults_for_values_of_the_wrong_type(): void {
+		$this->http->set_config(
+			array(
+				'url'       => 'https://example.com',
+				'timeout'   => array( 3 ),
+				'head_only' => new \stdClass(),
+			)
+		);
+		$this->http->run();
+
+		$this->assertSame(
+			array(
+				'url'       => 'https://example.com',
+				'timeout'   => 10,
+				'head_only' => true,
+			),
+			$this->http->calls[0]
+		);
 	}
 }

@@ -283,4 +283,129 @@ final class Tests_Base_Test extends TestCase {
 		$this->assertNotSame( $first, $second );
 		$this->assertSame( Status::WARNING, $second->get_status() );
 	}
+
+	/**
+	 * Without a configured target filter there is none.
+	 *
+	 * @return void
+	 */
+	#[Test]
+	public function has_no_target_filter_by_default(): void {
+		$this->check->set_config( array() );
+
+		$this->assertNull( $this->check->read_target_filter() );
+	}
+
+	/**
+	 * A configured target filter is available to the concrete test.
+	 *
+	 * @return void
+	 */
+	#[Test]
+	public function returns_the_configured_target_filter(): void {
+		$filter = static fn( string $host, string $ip, ?int $port ): bool => true;
+
+		$this->check->set_config( array( 'target_filter' => $filter ) );
+		$this->check->run();
+
+		$this->assertSame( $filter, $this->check->read_target_filter() );
+		$this->assertTrue( $this->check->executed );
+	}
+
+	/**
+	 * A target filter that cannot be called is a configuration error. It
+	 * must not silently turn into "no filter", which would accept every
+	 * target.
+	 *
+	 * @return void
+	 */
+	#[Test]
+	public function short_circuits_on_a_target_filter_that_is_not_callable(): void {
+		foreach ( array( 'no_such_function', true, array( 'Not', 'callable' ), 42 ) as $filter ) {
+			$check = new Configurable_Check();
+			$check->set_config( array( 'target_filter' => $filter ) );
+			$check->run();
+
+			$this->assertFalse( $check->executed );
+			$this->assertSame( Status::ERROR, $check->get_result()->get_status() );
+			$this->assertSame( 'invalid_config', $check->get_result()->get_error_code() );
+			$this->assertSame( array( 'invalid_config' => array( 'target_filter' ) ), $check->get_result()->get_data() );
+		}
+	}
+
+	/**
+	 * A configured value is returned as it is - also if it is "empty" in
+	 * PHP terms. Only a missing key or null falls back to the default.
+	 *
+	 * @return void
+	 */
+	#[Test]
+	public function returns_configured_values_that_are_falsy(): void {
+		$this->check->set_config(
+			array(
+				'flag'  => false,
+				'count' => 0,
+				'text'  => '',
+				'zero'  => '0',
+				'list'  => array(),
+			)
+		);
+
+		$this->assertFalse( $this->check->read_config( 'flag', true ) );
+		$this->assertSame( 0, $this->check->read_config( 'count', 5 ) );
+		$this->assertSame( '', $this->check->read_config( 'text', 'fallback' ) );
+		$this->assertSame( '0', $this->check->read_config( 'zero', 'fallback' ) );
+		$this->assertSame( array(), $this->check->read_config( 'list', array( 'fallback' ) ) );
+
+		$this->assertFalse( $this->check->read_scalar_config( 'flag', true ) );
+		$this->assertSame( 0, $this->check->read_scalar_config( 'count', 5 ) );
+		$this->assertSame( '', $this->check->read_scalar_config( 'text', 'fallback' ) );
+		$this->assertSame( '0', $this->check->read_scalar_config( 'zero', 'fallback' ) );
+	}
+
+	/**
+	 * The scalar helper falls back for everything that is not a scalar.
+	 *
+	 * @return void
+	 */
+	#[Test]
+	public function falls_back_for_a_value_that_is_not_a_scalar(): void {
+		$this->check->set_config(
+			array(
+				'list'   => array( 1 ),
+				'object' => new \stdClass(),
+				'null'   => null,
+			)
+		);
+
+		$this->assertSame( 'fallback', $this->check->read_scalar_config( 'list', 'fallback' ) );
+		$this->assertSame( 7, $this->check->read_scalar_config( 'object', 7 ) );
+		$this->assertSame( 1.5, $this->check->read_scalar_config( 'null', 1.5 ) );
+		$this->assertTrue( $this->check->read_scalar_config( 'missing', true ) );
+	}
+
+	/**
+	 * A required value has to be a scalar, anything else is reported like a
+	 * target filter that cannot be called.
+	 *
+	 * @return void
+	 */
+	#[Test]
+	public function short_circuits_on_a_required_value_that_is_not_a_scalar(): void {
+		$this->check->required = array( 'host', 'port', 'url' );
+
+		$this->check->set_config(
+			array(
+				'host' => array( 'example.com' ),
+				'port' => 443,
+				'url'  => new \stdClass(),
+			)
+		);
+		$this->check->run();
+
+		$this->assertFalse( $this->check->executed );
+		$this->assertSame( Status::ERROR, $this->check->get_result()->get_status() );
+		$this->assertSame( 'invalid_config', $this->check->get_result()->get_error_code() );
+		$this->assertSame( array( 'invalid_config' => array( 'host', 'url' ) ), $this->check->get_result()->get_data() );
+	}
 }

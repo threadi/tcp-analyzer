@@ -269,4 +269,98 @@ final class ExternalIp_Test extends TestCase {
 
 		$this->assertSame( Status::SUCCESS, $this->test->get_result()->get_status() );
 	}
+
+	/**
+	 * The configured target filter is handed to the HTTP client.
+	 *
+	 * @return void
+	 */
+	#[Test]
+	public function hands_the_target_filter_to_the_http_client(): void {
+		$filter = static fn( string $host, string $ip, ?int $port ): bool => true;
+		$double = new External_Ip_Double();
+
+		$double->set_config( array() );
+
+		$this->assertNull( $double->read_http_target_filter() );
+
+		$double->set_config( array( 'target_filter' => $filter ) );
+
+		$this->assertSame( $filter, $double->read_http_target_filter() );
+	}
+
+	/**
+	 * The real test - no double - skips a provider the filter rejects,
+	 * before anything is sent.
+	 *
+	 * @return void
+	 */
+	#[Test]
+	public function skips_a_provider_the_filter_rejects(): void {
+		$asked = array();
+
+		$test = new ExternalIp();
+		$test->set_config(
+			array(
+				'providers'     => array( 'http://127.0.0.1:9/ip', 'http://10.0.0.1/ip' ),
+				'target_filter' => static function ( string $host, string $ip, ?int $port ) use ( &$asked ): bool {
+					$asked[] = array( $host, $ip, $port );
+
+					return false;
+				},
+			)
+		);
+		$test->run();
+
+		$this->assertSame(
+			array(
+				array( '127.0.0.1', '127.0.0.1', 9 ),
+				array( '10.0.0.1', '10.0.0.1', 80 ),
+			),
+			$asked
+		);
+		$this->assertSame( Status::ERROR, $test->get_result()->get_status() );
+		$this->assertSame( 'external_ip_unavailable', $test->get_result()->get_error_code() );
+	}
+
+	/**
+	 * Anything but a URL in the provider list is skipped, without a PHP warning.
+	 *
+	 * @return void
+	 */
+	#[Test]
+	public function skips_providers_that_are_not_strings(): void {
+		$double = new External_Ip_Double();
+		$double->queue_body( '203.0.113.42' );
+
+		$double->set_config(
+			array(
+				'providers' => array( array( 'https://nested.example' ), null, 42, new \stdClass(), 'https://provider.example/ip' ),
+				'timeout'   => array( 1 ),
+			)
+		);
+		$double->run();
+
+		$this->assertCount( 1, $double->calls );
+		$this->assertSame( 'https://provider.example/ip', $double->calls[0]['url'] );
+		$this->assertSame( 5, $double->calls[0]['timeout'] );
+		$this->assertSame( '203.0.113.42', $double->get_result()->get_value() );
+	}
+
+	/**
+	 * Credentials of a provider URL are not repeated in the result.
+	 *
+	 * @return void
+	 */
+	#[Test]
+	public function keeps_credentials_out_of_the_result(): void {
+		$double = new External_Ip_Double();
+		$double->queue_body( '203.0.113.42' );
+
+		$double->set_config( array( 'providers' => array( 'https://user:secret@provider.example/ip' ) ) );
+		$double->run();
+
+		$this->assertSame( 'https://user:secret@provider.example/ip', $double->calls[0]['url'] );
+		$this->assertSame( array( 'provider' => 'https://provider.example/ip' ), $double->get_result()->get_data() );
+	}
 }

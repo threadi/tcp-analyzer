@@ -5,6 +5,8 @@
  * @package tcp-analyzer
  */
 
+declare(strict_types=1);
+
 namespace TcpAnalyzer;
 
 use JsonSerializable;
@@ -25,12 +27,12 @@ final class Result implements JsonSerializable {
 	/**
 	 * Constructor.
 	 *
-	 * @param string      $slug        Slug of the test that produced this result.
-	 * @param Status      $status      The resulting status.
-	 * @param mixed       $value       The primary, requested value of the test (e.g. the external IP).
-	 * @param array<string,mixed>       $data        Additional structured context data (no free text).
-	 * @param string|null $error_code  Machine-readable error identifier, if status is not SUCCESS.
-	 * @param float|null  $duration_ms Runtime of the test in milliseconds, if measured.
+	 * @param string              $slug        Slug of the test that produced this result.
+	 * @param Status              $status      The resulting status.
+	 * @param mixed               $value       The primary, requested value of the test (e.g. the external IP).
+	 * @param array<string,mixed> $data        Additional structured context data (no free text).
+	 * @param string|null         $error_code  Machine-readable error identifier, if status is not SUCCESS.
+	 * @param float|null          $duration_ms Runtime of the test in milliseconds, if measured.
 	 */
 	public function __construct(
 		private readonly string $slug,

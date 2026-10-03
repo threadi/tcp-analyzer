@@ -10,6 +10,7 @@ declare(strict_types=1);
 namespace TcpAnalyzer\PHPUnitTests\Unit;
 
 use PHPUnit\Framework\Attributes\CoversClass;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use TcpAnalyzer\PHPUnitTests\Support\FunctionMocks;
@@ -172,27 +173,105 @@ final class Shell_Method_Test extends TestCase {
 	}
 
 	/**
-	 * A host containing shell metacharacters must end up quoted, not
-	 * executed.
+	 * Hops and wait time are brought into the range the binary accepts.
 	 *
 	 * @return void
 	 */
 	#[Test]
-	public function escapes_a_host_containing_shell_metacharacters(): void {
-		$command_seen = null;
+	public function keeps_hops_and_wait_time_in_range(): void {
+		$commands_seen = array();
 
 		FunctionMocks::set_for_traceroute(
 			'shell_exec',
-			static function ( string $command ) use ( &$command_seen ): string {
-				$command_seen = $command;
+			static function ( string $command ) use ( &$commands_seen ): string {
+				$commands_seen[] = $command;
 
 				return self::SAMPLE_OUTPUT;
 			}
 		);
 
-		$this->method->trace( 'example.com; id', 20, 2 );
+		$this->method->trace( 'example.com', 1000, 0 );
+		$this->method->trace( 'example.com', -1, -1 );
 
-		$this->assertSame( "traceroute -n -w 2 -m 20 'example.com; id' 2>&1", $command_seen );
+		$this->assertSame(
+			array(
+				"traceroute -n -w 1 -m 255 'example.com' 2>&1",
+				"traceroute -n -w 1 -m 1 'example.com' 2>&1",
+			),
+			$commands_seen
+		);
+	}
+
+	/**
+	 * An IP address is a valid host as well.
+	 *
+	 * @return void
+	 */
+	#[Test]
+	public function accepts_an_ip_address_as_host(): void {
+		$commands_seen = array();
+
+		FunctionMocks::set_for_traceroute(
+			'shell_exec',
+			static function ( string $command ) use ( &$commands_seen ): string {
+				$commands_seen[] = $command;
+
+				return self::SAMPLE_OUTPUT;
+			}
+		);
+
+		$this->method->trace( '93.184.216.34', 20, 2 );
+		$this->method->trace( '2001:db8::1', 20, 2 );
+
+		$this->assertSame(
+			array(
+				"traceroute -n -w 2 -m 20 '93.184.216.34' 2>&1",
+				"traceroute -n -w 2 -m 20 '2001:db8::1' 2>&1",
+			),
+			$commands_seen
+		);
+	}
+
+	/**
+	 * Only a plain hostname or IP address reaches the command line.
+	 *
+	 * Quoting alone is not enough: a host starting with a dash stays inside
+	 * its quotes, but traceroute would still read it as an option.
+	 *
+	 * @param string $host The host to trace.
+	 * @return void
+	 */
+	#[Test]
+	#[DataProvider( 'provide_hosts_that_are_not_plain' )]
+	public function never_runs_a_command_for_a_host_that_is_not_plain( string $host ): void {
+		FunctionMocks::set_for_traceroute(
+			'shell_exec',
+			static function ( string $command ): string {
+				TestCase::fail( 'shell_exec() must not be called: ' . $command );
+			}
+		);
+
+		$this->assertSame( array(), $this->method->trace( $host, 20, 2 ) );
+	}
+
+	/**
+	 * Data provider: hosts that must never reach the command line.
+	 *
+	 * @return array<string,array{string}>
+	 */
+	public static function provide_hosts_that_are_not_plain(): array {
+		return array(
+			'short option'          => array( '-i' ),
+			'long option'           => array( '--help' ),
+			'option with value'     => array( '-g10.0.0.1' ),
+			'shell metacharacters'  => array( 'example.com; id' ),
+			'command substitution'  => array( '$(id)' ),
+			'second line'           => array( "example.com\n-i" ),
+			'trailing line break'   => array( "example.com\n" ),
+			'whitespace'            => array( 'example.com -i' ),
+			'quote'                 => array( "example.com'" ),
+			'empty'                 => array( '' ),
+		);
 	}
 
 	/**

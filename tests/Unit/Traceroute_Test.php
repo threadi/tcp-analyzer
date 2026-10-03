@@ -14,7 +14,9 @@ use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 use TcpAnalyzer\Enums\Status;
 use TcpAnalyzer\PHPUnitTests\Support\Fake_Method;
+use TcpAnalyzer\PHPUnitTests\Support\FunctionMocks;
 use TcpAnalyzer\Result;
+use TcpAnalyzer\Target_Filter;
 use TcpAnalyzer\Tests\Traceroute;
 use TcpAnalyzer\Traceroute\Shell_Method;
 use TcpAnalyzer\Traceroute\Socket_Method;
@@ -28,6 +30,15 @@ use TcpAnalyzer\Traceroute\Socket_Method;
  */
 #[CoversClass( Traceroute::class )]
 final class Traceroute_Test extends TestCase {
+
+	/**
+	 * {@inheritDoc}
+	 */
+	protected function tearDown(): void {
+		FunctionMocks::reset();
+
+		parent::tearDown();
+	}
 
 	/**
 	 * A single hop, used as a canned method answer.
@@ -370,6 +381,139 @@ final class Traceroute_Test extends TestCase {
 
 		$this->assertSame( Status::ERROR, $result->get_status() );
 		$this->assertSame( 'invalid_config', $result->get_error_code() );
+		$this->assertSame( array(), $method->calls );
+	}
+
+	/**
+	 * A host that is neither a plain name nor an IP address is an error, no
+	 * method is consulted.
+	 *
+	 * @return void
+	 */
+	#[Test]
+	public function refuses_a_host_that_is_not_plain(): void {
+		foreach ( array( '-i', '--help', 'example.com; id', "example.com\n-i", '' ) as $host ) {
+			$method = new Fake_Method( 'shell', null, self::hops() );
+			$result = $this->run_with( array( $method ), array( 'shell' ), array( 'host' => $host ) );
+
+			$this->assertSame( Status::ERROR, $result->get_status(), (string) json_encode( $host ) );
+			$this->assertSame( 'invalid_host', $result->get_error_code(), (string) json_encode( $host ) );
+			$this->assertSame( array( 'host' => $host ), $result->get_data() );
+			$this->assertNull( $result->get_duration_ms() );
+			$this->assertSame( array(), $method->calls );
+		}
+	}
+
+	/**
+	 * The number of hops and the wait time are kept within limits, whatever
+	 * is configured: both multiply into the runtime of a trace.
+	 *
+	 * @return void
+	 */
+	#[Test]
+	public function limits_the_hops_and_the_wait_time(): void {
+		$cases = array(
+			array( 300, 100, 64, 10 ),
+			array( 0, 0, 1, 1 ),
+			array( -5, -5, 1, 1 ),
+			array( 64, 10, 64, 10 ),
+			array( '12', '3', 12, 3 ),
+			array( array( 5 ), new \stdClass(), 20, 2 ),
+		);
+
+		foreach ( $cases as $case ) {
+			$method = new Fake_Method( 'shell', null, self::hops() );
+
+			$this->run_with(
+				array( $method ),
+				array( 'shell' ),
+				array(
+					'max_hops' => $case[0],
+					'wait'     => $case[1],
+				)
+			);
+
+			$this->assertSame( $case[2], $method->calls[0]['max_hops'] );
+			$this->assertSame( $case[3], $method->calls[0]['wait'] );
+		}
+	}
+
+	/**
+	 * Anything but a slug in the method list is skipped, without a PHP warning.
+	 *
+	 * @return void
+	 */
+	#[Test]
+	public function skips_methods_that_are_not_strings(): void {
+		$method = new Fake_Method( 'shell', null, self::hops() );
+		$result = $this->run_with( array( $method ), array( array( 'shell' ), null, 42, 'shell' ) );
+
+		$this->assertSame( Status::SUCCESS, $result->get_status() );
+		$this->assertCount( 1, $method->calls );
+	}
+
+	/**
+	 * An IPv6 address in brackets reaches the method without them.
+	 *
+	 * @return void
+	 */
+	#[Test]
+	public function hands_a_bracketed_ipv6_address_over_without_brackets(): void {
+		$method = new Fake_Method( 'shell', null, self::hops() );
+		$result = $this->run_with( array( $method ), array( 'shell' ), array( 'host' => '[2001:db8::1]' ) );
+
+		$this->assertSame( Status::SUCCESS, $result->get_status() );
+		$this->assertSame( '2001:db8::1', $method->calls[0]['host'] );
+		$this->assertSame( '[2001:db8::1]', $result->get_data()['host'] );
+	}
+
+	/**
+	 * With a target filter the method traces the IP the filter has
+	 * accepted, while the result still names the configured host.
+	 *
+	 * @return void
+	 */
+	#[Test]
+	public function traces_the_ip_the_filter_has_accepted(): void {
+		$asked = array();
+
+		FunctionMocks::set_for_traits( 'gethostbynamel', static fn( string $hostname ): array => array( '93.184.216.34' ) );
+
+		$method = new Fake_Method( 'shell', null, self::hops() );
+		$result = $this->run_with(
+			array( $method ),
+			array( 'shell' ),
+			array(
+				'target_filter' => static function ( string $host, string $ip, ?int $port ) use ( &$asked ): bool {
+					$asked[] = array( $host, $ip, $port );
+
+					return true;
+				},
+			)
+		);
+
+		$this->assertSame( array( array( 'example.com', '93.184.216.34', null ) ), $asked );
+		$this->assertSame( Status::SUCCESS, $result->get_status() );
+		$this->assertSame( '93.184.216.34', $method->calls[0]['host'] );
+		$this->assertSame( 'example.com', $result->get_data()['host'] );
+	}
+
+	/**
+	 * A rejected target is not traced.
+	 *
+	 * @return void
+	 */
+	#[Test]
+	public function does_not_trace_a_rejected_target(): void {
+		FunctionMocks::set_for_traits( 'gethostbynamel', static fn( string $hostname ): array => array( '192.168.1.1' ) );
+		FunctionMocks::set_for_traits( 'dns_get_record', static fn( string $hostname, int $type ): array => array() );
+
+		$method = new Fake_Method( 'shell', null, self::hops() );
+		$result = $this->run_with( array( $method ), array( 'shell' ), array( 'target_filter' => Target_Filter::public_only() ) );
+
+		$this->assertSame( Status::ERROR, $result->get_status() );
+		$this->assertSame( 'target_rejected', $result->get_error_code() );
+		$this->assertSame( array( 'host' => 'example.com' ), $result->get_data() );
 		$this->assertSame( array(), $method->calls );
 	}
 

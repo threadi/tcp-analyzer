@@ -52,4 +52,13 @@ final class Http_Double extends Http {
 
 		return $this->response;
 	}
+
+	/**
+	 * Expose the target filter handed to the HTTP client.
+	 *
+	 * @return callable|null
+	 */
+	public function read_http_target_filter(): ?callable {
+		return $this->http_target_filter();
+	}
 }

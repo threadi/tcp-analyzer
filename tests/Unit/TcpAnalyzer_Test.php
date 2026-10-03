@@ -10,12 +10,17 @@ declare(strict_types=1);
 namespace TcpAnalyzer\PHPUnitTests\Unit;
 
 use InvalidArgumentException;
+use Error;
+use LogicException;
 use PHPUnit\Framework\Attributes\CoversClass;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
+use RuntimeException;
 use stdClass;
 use TcpAnalyzer\PHPUnitTests\Support\Other_Spy_Check;
 use TcpAnalyzer\PHPUnitTests\Support\Spy_Check;
+use TcpAnalyzer\PHPUnitTests\Support\Throwing_Check;
 use TcpAnalyzer\Result;
 use TcpAnalyzer\TcpAnalyzer;
 use TcpAnalyzer\Tests\Dns;
@@ -310,5 +315,158 @@ final class TcpAnalyzer_Test extends TestCase {
 			),
 			$this->analyzer->get_results_as_array()
 		);
+	}
+
+	/**
+	 * A target filter set on the analyzer reaches every test.
+	 *
+	 * @return void
+	 */
+	#[Test]
+	public function hands_its_target_filter_to_every_test(): void {
+		$filter = static fn( string $host, string $ip, ?int $port ): bool => true;
+
+		$this->analyzer->register_test( 'spy', Spy_Check::class );
+		$this->analyzer->register_test( 'other_spy', Other_Spy_Check::class );
+		$this->analyzer->set_target_filter( $filter );
+		$this->analyzer->set_tests(
+			array(
+				'spy'       => array( 'host' => 'example.com' ),
+				'other_spy' => array(),
+			)
+		);
+		$this->analyzer->run();
+
+		$this->assertSame(
+			array(
+				'host'          => 'example.com',
+				'target_filter' => $filter,
+			),
+			Spy_Check::$configs['spy']
+		);
+		$this->assertSame( array( 'target_filter' => $filter ), Spy_Check::$configs['other_spy'] );
+	}
+
+	/**
+	 * A target filter in the config of a test wins over the one of the
+	 * analyzer - including an explicit null, which opts that test out.
+	 *
+	 * @return void
+	 */
+	#[Test]
+	public function keeps_the_target_filter_a_test_brings_along(): void {
+		$global = static fn( string $host, string $ip, ?int $port ): bool => true;
+		$own    = static fn( string $host, string $ip, ?int $port ): bool => false;
+
+		$this->analyzer->register_test( 'spy', Spy_Check::class );
+		$this->analyzer->register_test( 'other_spy', Other_Spy_Check::class );
+		$this->analyzer->set_target_filter( $global );
+		$this->analyzer->set_tests(
+			array(
+				'spy'       => array( 'target_filter' => $own ),
+				'other_spy' => array( 'target_filter' => null ),
+			)
+		);
+		$this->analyzer->run();
+
+		$this->assertSame( $own, Spy_Check::$configs['spy']['target_filter'] );
+		$this->assertNull( Spy_Check::$configs['other_spy']['target_filter'] );
+	}
+
+	/**
+	 * Without a target filter the config of a test stays untouched, and
+	 * the filter can be removed again.
+	 *
+	 * @return void
+	 */
+	#[Test]
+	public function leaves_the_config_alone_without_a_target_filter(): void {
+		$this->analyzer->register_test( 'spy', Spy_Check::class );
+		$this->analyzer->set_tests( array( 'spy' => array( 'host' => 'example.com' ) ) );
+
+		$this->analyzer->run();
+
+		$this->assertSame( array( 'host' => 'example.com' ), Spy_Check::$configs['spy'] );
+
+		$this->analyzer->set_target_filter( static fn( string $host, string $ip, ?int $port ): bool => true );
+		$this->analyzer->set_target_filter( null );
+		$this->analyzer->run();
+
+		$this->assertSame( array( 'host' => 'example.com' ), Spy_Check::$configs['spy'] );
+	}
+
+	/**
+	 * A test that throws is reported as failed - with the class of what was
+	 * thrown, but without its message - and the tests after it still run.
+	 *
+	 * @param string $mode             The way the test fails.
+	 * @param string $expected_class   The class reported in the result.
+	 * @return void
+	 */
+	#[Test]
+	#[DataProvider( 'provide_failing_tests' )]
+	public function reports_a_test_that_throws_and_runs_the_others( string $mode, string $expected_class ): void {
+		$this->analyzer->register_test( 'throwing', Throwing_Check::class );
+		$this->analyzer->register_test( 'spy', Spy_Check::class );
+		$this->analyzer->set_tests(
+			array(
+				'throwing' => array( 'mode' => $mode ),
+				'spy'      => array(),
+			)
+		);
+
+		$this->analyzer->run();
+
+		$results = $this->analyzer->get_results();
+
+		$this->assertSame( array( 'throwing', 'spy' ), array_keys( $results ) );
+		$this->assertSame( 'error', $results['throwing']->get_status()->value );
+		$this->assertSame( 'test_exception', $results['throwing']->get_error_code() );
+		$this->assertSame( array( 'exception' => $expected_class ), $results['throwing']->get_data() );
+		$this->assertNull( $results['throwing']->get_value() );
+		$this->assertStringNotContainsString( 'message', (string) json_encode( $this->analyzer->get_results_as_array() ) );
+		$this->assertSame( 'spy-value', $results['spy']->get_value() );
+	}
+
+	/**
+	 * Data provider: ways a test can fail, and the class reported for it.
+	 *
+	 * @return array<string,array{string,string}>
+	 */
+	public static function provide_failing_tests(): array {
+		return array(
+			'an exception'            => array( 'throw', LogicException::class ),
+			'a PHP error'             => array( 'error', Error::class ),
+			'no result has been set'  => array( 'silent', RuntimeException::class ),
+		);
+	}
+
+	/**
+	 * A target filter that throws is reported the same way.
+	 *
+	 * @return void
+	 */
+	#[Test]
+	public function reports_a_target_filter_that_throws(): void {
+		$this->analyzer->set_target_filter(
+			static function ( string $host, string $ip, ?int $port ): bool {
+				throw new LogicException( 'A message that must not show up in any result.' );
+			}
+		);
+		$this->analyzer->set_tests(
+			array(
+				'tcp_connect' => array(
+					'host' => '192.0.2.1',
+					'port' => 443,
+				),
+			)
+		);
+
+		$this->analyzer->run();
+
+		$result = $this->analyzer->get_results()['tcp_connect'];
+
+		$this->assertSame( 'test_exception', $result->get_error_code() );
+		$this->assertSame( array( 'exception' => LogicException::class ), $result->get_data() );
 	}
 }
