@@ -5,6 +5,8 @@
  * @package tcp-analyzer
  */
 
+declare(strict_types=1);
+
 namespace TcpAnalyzer;
 
 use RuntimeException;
@@ -60,8 +62,10 @@ abstract class Tests_Base implements Test_Interface {
 	/**
 	 * Config keys that must be present and non-null before execute() may run.
 	 *
-	 * If any are missing, run() will short-circuit with an "invalid_config" error
-	 * result and execute() is never called.
+	 * They also have to be scalars (string, number or boolean).
+	 *
+	 * If any are missing or of another type, run() will short-circuit with an
+	 * "invalid_config" error result and execute() is never called.
 	 *
 	 * @return string[]
 	 */
@@ -72,12 +76,48 @@ abstract class Tests_Base implements Test_Interface {
 	/**
 	 * Read a single config value.
 	 *
-	 * @param string $key     Config key.
-	 * @param mixed  $default Fallback value if not set.
+	 * @param string $key              Config key.
+	 * @param mixed  $fallback_default Fallback value if not set.
 	 * @return mixed
 	 */
-	protected function get_config( string $key, mixed $default = null ): mixed {
-		return $this->config[ $key ] ?? $default;
+	protected function get_config( string $key, mixed $fallback_default = null ): mixed {
+		return $this->config[ $key ] ?? $fallback_default;
+	}
+
+	/**
+	 * Read a single config value that has to be a scalar (string, number or boolean).
+	 *
+	 * Anything else - an array, an object - is treated as not set: casting
+	 * it to the expected type would raise a PHP warning or even an error.
+	 *
+	 * @param string                $key              Config key.
+	 * @param string|int|float|bool $fallback_default Fallback value if not set, or not a scalar.
+	 * @return string|int|float|bool
+	 */
+	protected function get_scalar_config( string $key, string|int|float|bool $fallback_default ): string|int|float|bool {
+		$value = $this->config[ $key ] ?? null;
+
+		return is_scalar( $value ) ? $value : $fallback_default;
+	}
+
+	/**
+	 * Return the configured target filter, if any.
+	 *
+	 * Config key "target_filter": a callable that decides whether this test
+	 * may talk to a target. It is called as
+	 * $filter( string $host, string $ip, ?int $port ) with the IP the host
+	 * resolved to, and has to return exactly true to accept it. The test
+	 * then uses that IP, the host is not resolved a second time.
+	 *
+	 * Supported by all built-in tests. Without a filter, every target is
+	 * accepted.
+	 *
+	 * @return callable|null
+	 */
+	protected function get_target_filter(): ?callable {
+		$filter = $this->get_config( 'target_filter' );
+
+		return is_callable( $filter ) ? $filter : null;
 	}
 
 	/**
@@ -101,11 +141,11 @@ abstract class Tests_Base implements Test_Interface {
 	/**
 	 * Store the result of this test run.
 	 *
-	 * @param Status      $status      The resulting status.
-	 * @param mixed       $value       The primary, requested value of the test.
-	 * @param array<string,mixed>       $data        Additional structured context data (no free text).
-	 * @param string|null $error_code  Machine-readable error identifier, if status is not SUCCESS.
-	 * @param float|null  $duration_ms Runtime of the test in milliseconds, if measured.
+	 * @param Status              $status      The resulting status.
+	 * @param mixed               $value       The primary, requested value of the test.
+	 * @param array<string,mixed> $data        Additional structured context data (no free text).
+	 * @param string|null         $error_code  Machine-readable error identifier, if status is not SUCCESS.
+	 * @param float|null          $duration_ms Runtime of the test in milliseconds, if measured.
 	 * @return void
 	 */
 	protected function set_result( Status $status, mixed $value = null, array $data = array(), ?string $error_code = null, ?float $duration_ms = null ): void {
@@ -114,6 +154,8 @@ abstract class Tests_Base implements Test_Interface {
 
 	/**
 	 * {@inheritDoc}
+	 *
+	 * @throws RuntimeException On any error.
 	 */
 	public function get_result(): Result {
 		if ( null === $this->result ) {
@@ -136,6 +178,24 @@ abstract class Tests_Base implements Test_Interface {
 
 		if ( ! empty( $missing ) ) {
 			$this->set_result( Status::ERROR, null, array( 'missing_config' => $missing ), 'invalid_config' );
+			return;
+		}
+
+		$not_scalar = array_values(
+			array_filter(
+				$this->get_required_config(),
+				fn( string $key ): bool => ! is_scalar( $this->config[ $key ] )
+			)
+		);
+
+		if ( ! empty( $not_scalar ) ) {
+			$this->set_result( Status::ERROR, null, array( 'invalid_config' => $not_scalar ), 'invalid_config' );
+			return;
+		}
+
+		// A target filter that cannot be called must not silently turn into "no filter".
+		if ( isset( $this->config['target_filter'] ) && ! is_callable( $this->config['target_filter'] ) ) {
+			$this->set_result( Status::ERROR, null, array( 'invalid_config' => array( 'target_filter' ) ), 'invalid_config' );
 			return;
 		}
 

@@ -126,4 +126,24 @@ final class Configurable_Check extends Tests_Base {
 	public function store_bare_result( Status $status ): void {
 		$this->set_result( $status );
 	}
+
+	/**
+	 * Expose the protected get_target_filter() helper to the test case.
+	 *
+	 * @return callable|null
+	 */
+	public function read_target_filter(): ?callable {
+		return $this->get_target_filter();
+	}
+
+	/**
+	 * Expose the protected get_scalar_config() helper to the test case.
+	 *
+	 * @param string                $key              Config key.
+	 * @param string|int|float|bool $fallback_default Fallback value.
+	 * @return string|int|float|bool
+	 */
+	public function read_scalar_config( string $key, string|int|float|bool $fallback_default ): string|int|float|bool {
+		return $this->get_scalar_config( $key, $fallback_default );
+	}
 }

@@ -1,0 +1,50 @@
+<?xml version="1.0"?>
+<ruleset name="TcpAnalyzerCS" namespace="TcpAnalyzerCS\TcpAnalyzerCS">
+	<description>TCP Analyzer Coding Standards</description>
+
+    <!--
+        Only scan files with .php extension.
+    -->
+    <arg name="extensions" value="php" />
+
+    <!--
+        Directories to exclude. Relative to the project root and anchored:
+        patterns are case-insensitive, "*/tests/*" would also skip src/Tests/.
+    -->
+    <exclude-pattern type="relative">^\.github/*</exclude-pattern>
+    <exclude-pattern type="relative">^tests/*</exclude-pattern>
+    <exclude-pattern type="relative">^vendor/*</exclude-pattern>
+
+    <!-- "WordPress" is Core + Docs + Extra. -->
+    <rule ref="WordPress">
+        <!-- An exception message is not output. -->
+        <exclude name="WordPress.Security.EscapeOutput.ExceptionNotEscaped"/>
+
+        <!-- This package must not use any WordPress function, so there is no wp_remote_get() or wp_parse_url(). -->
+        <exclude name="WordPress.WP.AlternativeFunctions"/>
+
+        <!-- Excluded in favor to match PSR-4-namings of classes. -->
+        <exclude name="WordPress.Files.FileName"/>
+
+        <!-- prevent WCS hint for list types which are necessary for PHPStan -->
+        <exclude name="Squiz.Commenting.FunctionComment.IncorrectTypeHint"/>
+    </rule>
+
+    <!-- Require declare(strict_types=1) in every file. -->
+    <rule ref="Generic.PHP.RequireStrictTypes"/>
+
+    <!-- We know inherit doc. -->
+    <rule ref="Squiz.Commenting.FunctionComment">
+        <properties>
+            <property name="skipIfInheritdoc" value="true"/>
+        </properties>
+    </rule>
+
+    <!-- Allow @ in front of the PHP functions that report failures as warnings (file_get_contents(), fsockopen(), ...), like WordPress-Core does. -->
+    <rule ref="WordPress.PHP.NoSilencedErrors">
+        <properties>
+            <property name="usePHPFunctionsList" value="true"/>
+        </properties>
+    </rule>
+
+</ruleset>

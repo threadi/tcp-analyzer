@@ -5,6 +5,8 @@
  * @package tcp-analyzer
  */
 
+declare(strict_types=1);
+
 namespace TcpAnalyzer\Enums;
 
 /**

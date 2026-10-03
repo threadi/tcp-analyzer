@@ -5,6 +5,8 @@
  * @package tcp-analyzer
  */
 
+declare(strict_types=1);
+
 namespace TcpAnalyzer\Tests;
 
 use TcpAnalyzer\Enums\Status;
@@ -12,12 +14,21 @@ use TcpAnalyzer\Tests_Base;
 use TcpAnalyzer\Traits\Http_Client;
 
 /**
- * Sends a HTTP request to a URL and measures DNS/connect/TLS/TTFB/total timing.
+ * Sends an HTTP request to a URL and measures DNS/connect/TLS/TTFB/total timing.
  *
  * Config:
  * - url (string, required): the URL to request.
  * - timeout (int): timeout in seconds, default 10.
  * - head_only (bool): send a HEAD-only request, default true.
+ * - target_filter (callable): decides whether the host of the URL may be
+ *   requested, see Tests_Base::get_target_filter().
+ *
+ * Only http:// and https:// URLs are requested, and redirects are not
+ * followed: the result describes the given URL, a 3xx status is reported
+ * as it is (and counts as success).
+ *
+ * Not more than 1 MB of a response body is read, and credentials given in
+ * the URL are not repeated in the result data.
  *
  * Result value: the HTTP status code on success, null on failure.
  * Result data: 'timing' with dns_ms/connect_ms/tls_ms/ttfb_ms/total_ms
@@ -54,13 +65,23 @@ class Http extends Tests_Base {
 	/**
 	 * {@inheritDoc}
 	 */
+	protected function http_target_filter(): ?callable {
+		return $this->get_target_filter();
+	}
+
+	/**
+	 * {@inheritDoc}
+	 */
 	protected function execute(): void {
-		$url      = (string) $this->get_config( 'url' );
+		$url      = (string) $this->get_scalar_config( 'url', '' );
 		$response = $this->http_request(
 			$url,
-			(int) $this->get_config( 'timeout', 10 ),
-			(bool) $this->get_config( 'head_only', true )
+			(int) $this->get_scalar_config( 'timeout', 10 ),
+			(bool) $this->get_scalar_config( 'head_only', true )
 		);
+
+		// Credentials are needed for the request, but have no place in the result.
+		$url = $this->http_url_without_credentials( $url );
 
 		if ( ! $response['success'] ) {
 			$this->set_result(

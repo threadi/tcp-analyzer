@@ -5,14 +5,18 @@
  * @package tcp-analyzer
  */
 
+declare(strict_types=1);
+
 namespace TcpAnalyzer;
 
 use InvalidArgumentException;
+use TcpAnalyzer\Enums\Status;
 use TcpAnalyzer\Tests\Dns;
 use TcpAnalyzer\Tests\ExternalIp;
 use TcpAnalyzer\Tests\Http;
 use TcpAnalyzer\Tests\TcpConnect;
 use TcpAnalyzer\Tests\Traceroute;
+use Throwable;
 
 /**
  * Main object to handle the TCP Analyzer tasks.
@@ -59,23 +63,50 @@ class TcpAnalyzer {
 	private array $results = array();
 
 	/**
+	 * Target filter handed to every test that has none in its own config.
+	 *
+	 * @var callable|null
+	 */
+	private $target_filter = null;
+
+	/**
 	 * Constructor for this object.
 	 */
 	public function __construct() {}
 
 	/**
+	 * Restrict the targets all tests may talk to.
+	 *
+	 * The filter is passed on as "target_filter" config to every test that
+	 * does not bring its own, see Tests_Base::get_target_filter() for its
+	 * signature. Target_Filter::public_only() is a ready-made filter that
+	 * rejects loopback, private and other non-public addresses.
+	 *
+	 * Set this whenever a host or URL originates from user input.
+	 *
+	 * @param callable|null $filter The filter, or null to remove it.
+	 * @return void
+	 * @noinspection PhpUnused
+	 */
+	public function set_target_filter( ?callable $filter ): void {
+		$this->target_filter = $filter;
+	}
+
+	/**
 	 * Register a custom test class, or override a built-in one.
 	 *
 	 * @param string $slug  Unique slug for this test.
-	 * @param string $class Fully qualified class name, must implement Test_Interface.
+	 * @param string $test_class Fully qualified class name, must implement Test_Interface.
 	 * @return void
+	 *
+	 * @throws InvalidArgumentException On any error.
 	 */
-	public function register_test( string $slug, string $class ): void {
-		if ( ! is_a( $class, Test_Interface::class, true ) ) {
-			throw new InvalidArgumentException( sprintf( 'Class "%s" must implement %s.', $class, Test_Interface::class ) );
+	public function register_test( string $slug, string $test_class ): void {
+		if ( ! is_a( $test_class, Test_Interface::class, true ) ) {
+			throw new InvalidArgumentException( sprintf( 'Class "%s" must implement %s.', $test_class, Test_Interface::class ) );
 		}
 
-		$this->available_tests[ $slug ] = $class;
+		$this->available_tests[ $slug ] = $test_class;
 	}
 
 	/**
@@ -94,6 +125,8 @@ class TcpAnalyzer {
 	 *                                                  config array is valid for tests
 	 *                                                  without required options.
 	 * @return void
+	 *
+	 * @throws InvalidArgumentException On any error.
 	 */
 	public function set_tests( array $tests ): void {
 		foreach ( $tests as $slug => $config ) {
@@ -116,16 +149,30 @@ class TcpAnalyzer {
 		foreach ( $this->tests_to_run as $slug => $config ) {
 			$class = $this->available_tests[ $slug ];
 
-			/**
-			 * The test instance.
-			 *
-			 * @var Test_Interface $test
-			 */
-			$test = new $class();
-			$test->set_config( $config );
-			$test->run();
+			if ( null !== $this->target_filter && ! array_key_exists( 'target_filter', $config ) ) {
+				$config['target_filter'] = $this->target_filter;
+			}
 
-			$this->results[ $slug ] = $test->get_result();
+			/*
+			 * A test that throws - a custom test, a target filter, a test
+			 * that forgot to set its result - must not take the others down
+			 * with it. It is reported as failed, with the class of what has
+			 * been thrown: the message is free text and stays out.
+			 */
+			try {
+				/**
+				 * The test instance.
+				 *
+				 * @var Test_Interface $test
+				 */
+				$test = new $class();
+				$test->set_config( $config );
+				$test->run();
+
+				$this->results[ $slug ] = $test->get_result();
+			} catch ( Throwable $throwable ) {
+				$this->results[ $slug ] = new Result( $slug, Status::ERROR, null, array( 'exception' => $throwable::class ), 'test_exception' );
+			}
 		}
 	}
 

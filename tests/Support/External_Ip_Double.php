@@ -104,4 +104,13 @@ final class External_Ip_Double extends ExternalIp {
 
 		return $response;
 	}
+
+	/**
+	 * Expose the target filter handed to the HTTP client.
+	 *
+	 * @return callable|null
+	 */
+	public function read_http_target_filter(): ?callable {
+		return $this->http_target_filter();
+	}
 }

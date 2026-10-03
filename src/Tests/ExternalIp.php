@@ -5,6 +5,8 @@
  * @package tcp-analyzer
  */
 
+declare(strict_types=1);
+
 namespace TcpAnalyzer\Tests;
 
 use TcpAnalyzer\Enums\Status;
@@ -18,6 +20,9 @@ use TcpAnalyzer\Traits\Http_Client;
  * - providers (string[]): list of URLs to try, in order. Each may return
  *   either a JSON body with an "ip" key or the plain IP as body.
  * - timeout (int): timeout in seconds per provider.
+ * - target_filter (callable): decides whether the host of a provider may be
+ *   requested, see Tests_Base::get_target_filter(). A rejected provider is
+ *   skipped.
  *
  * Result value: the external IP as string, or null on failure.
  */
@@ -49,14 +54,26 @@ class ExternalIp extends Tests_Base {
 	/**
 	 * {@inheritDoc}
 	 */
+	protected function http_target_filter(): ?callable {
+		return $this->get_target_filter();
+	}
+
+	/**
+	 * {@inheritDoc}
+	 */
 	protected function execute(): void {
 		$this->start_timer();
 
 		foreach ( (array) $this->get_config( 'providers' ) as $provider_url ) {
-			$ip = $this->request_ip( (string) $provider_url, (int) $this->get_config( 'timeout', 5 ) );
+			// Anything but a URL in the list is skipped like a provider that does not answer.
+			if ( ! is_string( $provider_url ) ) {
+				continue;
+			}
+
+			$ip = $this->request_ip( $provider_url, (int) $this->get_scalar_config( 'timeout', 5 ) );
 
 			if ( null !== $ip ) {
-				$this->set_result( Status::SUCCESS, $ip, array( 'provider' => $provider_url ), null, $this->stop_timer() );
+				$this->set_result( Status::SUCCESS, $ip, array( 'provider' => $this->http_url_without_credentials( $provider_url ) ), null, $this->stop_timer() );
 				return;
 			}
 		}
